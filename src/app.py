@@ -2,29 +2,46 @@ import streamlit as st
 import pandas as pd
 import xgboost as xgb
 import plotly.express as px
+import os
 from collections import Counter
 from sklearn.preprocessing import LabelEncoder
 
+# Page Config
 st.set_page_config(page_title="MatchVerse - AI Matchmaking", layout="wide")
 st.title("🔍 MatchVerse - AI Matchmaking Recommendations")
 
-# File paths
-USERS_CSV_PATH = "users.csv"
-INTERACTIONS_CSV_PATH = "interactions.csv"
-MODEL_JSON_PATH = "recommendation_model.json"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+USERS_CSV_PATH = os.path.join(BASE_DIR, '..', 'data', 'users.csv')
+INTERACTIONS_CSV_PATH = os.path.join(BASE_DIR, '..', 'data', 'interactions.csv')
+MODEL_JSON_PATH = os.path.join(BASE_DIR, '..', 'models', 'recommendation_model.json')
 
 @st.cache_data
 def load_users():
+    if not os.path.exists(USERS_CSV_PATH):
+        st.error(f"❌ File not found: {USERS_CSV_PATH}")
+        return pd.DataFrame()
     return pd.read_csv(USERS_CSV_PATH)
 
 @st.cache_data
 def load_interactions():
+    if not os.path.exists(INTERACTIONS_CSV_PATH):
+        st.error(f"❌ File not found: {INTERACTIONS_CSV_PATH}")
+        return pd.DataFrame()
     return pd.read_csv(INTERACTIONS_CSV_PATH)
 
 users_df = load_users()
 interactions_df = load_interactions()
 
+# Stop execution if data didn't load
+if users_df.empty or interactions_df.empty:
+    st.stop()
+
 # Label Encoding for categorical features
+# NOTE: In a professional app, you would load saved encoders. 
+# For now, we fit them fresh. Ideally, ensure users.csv hasn't changed sort order.
 label_encoders = {}
 for col in ["Gender", "Marital_Status", "Sect", "Caste", "State"]:
     le = LabelEncoder()
@@ -33,7 +50,11 @@ for col in ["Gender", "Marital_Status", "Sect", "Caste", "State"]:
 
 # Load trained XGBoost model
 bst = xgb.Booster()
-bst.load_model(MODEL_JSON_PATH)
+if os.path.exists(MODEL_JSON_PATH):
+    bst.load_model(MODEL_JSON_PATH)
+else:
+    st.error(f"❌ Model file not found at: {MODEL_JSON_PATH}")
+    st.stop()
 
 # Features used in the model
 MODEL_FEATURES = ["Age_Diff", "Same_Caste", "Same_Sect", "Same_State", "Target_Popularity"]
@@ -48,15 +69,20 @@ def get_recommendations(member_id):
         return {"error": "User not found"}
 
     user_meta = user_row.iloc[0]
-    user_details = {
-        "Member_ID": int(user_meta["Member_ID"]),
-        "Gender": label_encoders["Gender"].inverse_transform([int(user_meta["Gender"])])[0],
-        "Age": int(user_meta["Age"]),
-        "Marital_Status": label_encoders["Marital_Status"].inverse_transform([int(user_meta["Marital_Status"])])[0],
-        "Sect": label_encoders["Sect"].inverse_transform([int(user_meta["Sect"])])[0],
-        "Caste": label_encoders["Caste"].inverse_transform([int(user_meta["Caste"])])[0],
-        "State": label_encoders["State"].inverse_transform([int(user_meta["State"])])[0],
-    }
+    
+    # Safe inverse transform (handling potential errors if encoding shifted)
+    try:
+        user_details = {
+            "Member_ID": int(user_meta["Member_ID"]),
+            "Gender": label_encoders["Gender"].inverse_transform([int(user_meta["Gender"])])[0],
+            "Age": int(user_meta["Age"]),
+            "Marital_Status": label_encoders["Marital_Status"].inverse_transform([int(user_meta["Marital_Status"])])[0],
+            "Sect": label_encoders["Sect"].inverse_transform([int(user_meta["Sect"])])[0],
+            "Caste": label_encoders["Caste"].inverse_transform([int(user_meta["Caste"])])[0],
+            "State": label_encoders["State"].inverse_transform([int(user_meta["State"])])[0],
+        }
+    except Exception as e:
+        return {"error": f"Error decoding user details: {str(e)}"}
 
     # Get opposite gender
     opposite_gender_encoded = 1 - user_meta["Gender"]
@@ -125,22 +151,20 @@ if st.button("Get Recommendations"):
 
                 # 📊 Charts
                 st.subheader("📊 Statistics")
-
-                # Age Distribution
-                age_df = pd.DataFrame(result["statistics"]["age_distribution"].items(), columns=["Age", "Count"])
-                if not age_df.empty:
+                
+                # Check if we have data before plotting
+                if result["statistics"]["age_distribution"]:
+                    age_df = pd.DataFrame(result["statistics"]["age_distribution"].items(), columns=["Age", "Count"])
                     fig_age = px.bar(age_df, x="Age", y="Count", title="Age Distribution", color="Count", color_continuous_scale="Blues")
                     st.plotly_chart(fig_age, use_container_width=True)
 
-                # Caste Distribution
-                caste_df = pd.DataFrame(result["statistics"]["caste_distribution"].items(), columns=["Caste", "Count"])
-                if not caste_df.empty:
+                if result["statistics"]["caste_distribution"]:
+                    caste_df = pd.DataFrame(result["statistics"]["caste_distribution"].items(), columns=["Caste", "Count"])
                     fig_caste = px.bar(caste_df, x="Caste", y="Count", title="Caste Distribution", color="Count", color_continuous_scale="Reds")
                     st.plotly_chart(fig_caste, use_container_width=True)
 
-                # State Distribution
-                state_df = pd.DataFrame(result["statistics"]["state_distribution"].items(), columns=["State", "Count"])
-                if not state_df.empty:
+                if result["statistics"]["state_distribution"]:
+                    state_df = pd.DataFrame(result["statistics"]["state_distribution"].items(), columns=["State", "Count"])
                     fig_state = px.bar(state_df, x="State", y="Count", title="State Distribution", color="Count", color_continuous_scale="Greens")
                     st.plotly_chart(fig_state, use_container_width=True)
             else:
